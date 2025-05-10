@@ -1,7 +1,7 @@
 '''
 Final Project: Generative AI Audio FX chain 
 Kyle Six, KSL9443
-Kahlia Gronthos, KAG...
+Kahlia Gronthos, KAG9710
 5/8/2025
 
 [Description]
