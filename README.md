@@ -1,15 +1,12 @@
 # 🎶 Generative Audio Sampler
 A real-time desktop application that uses generative AI models to synthesize audio from text prompts, with an interactive FX chain (reverb, delay, distortion) and waveform visualization. Built using Python, PyTorch, and Tkinter, this tool offers a hands-on way to explore creative sound synthesis.
 
-# 📦 Project Demo Video
-<video autoplay loop style="width:100%; height: auto; position:absolute; z-index: -1;">
-  <source src="https://github.com/kyle-six/GenAIAudioInterface_DSP_Project/blob/06bb244de849d2c55161158427693cfaf61c0a6d/assets/ProjectDemoVideo_GenAiSampler.mp4" type="video/mp4" />
-  <img src="[http://syddev.com/jquery.videoBG/assets/tunnel_animation.jpg](https://github.com/user-attachments/assets/48c912e4-a5ac-4b0a-ac9b-a1a0d089546f)">
-</video>
+# 📦 Project Demo
+<p align="center">
+  <a href="https://drive.google.com/file/d/17NDivKAeehgqR5bQyC-ULeW65RS1iBfM/view?usp=drive_link"><img src="https://github.com/user-attachments/assets/48c912e4-a5ac-4b0a-ac9b-a1a0d089546f" alt="Project Demo Video" style="height:500px;"></a>
+</p>
 
-<video src='https://github.com/kyle-six/GenAIAudioInterface_DSP_Project/blob/main/assets/ProjectDemoVideo_GenAiSampler.mp4' />
-
-This project combines state-of-the-art generative audio models (e.g., TangoFlux) with an interactive GUI. Users can enter a text prompt to generate unique audio clips and apply real-time audio effects using rotary knobs. The app supports playback, waveform visualization, and saving of generated audio.
+  This project combines state-of-the-art generative audio models (e.g., TangoFlux) with an interactive GUI. Users can enter a text prompt to generate unique audio clips and apply real-time audio effects using rotary knobs. The app supports playback, waveform visualization, and saving of generated audio.
 
 # 🚀 Installation
 Prerequisites:
