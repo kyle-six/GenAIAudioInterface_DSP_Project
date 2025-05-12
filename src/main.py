@@ -6,29 +6,35 @@ Kahlia Gronthos, KAG9710
 
 A GUI application for generating novel audio samples from state-of-the-art generative AI, and an FX chain to tweak the output.
 """
+################# Outside Modules
+# TKinter
 import tkinter as Tk
-from tkinter import scrolledtext, filedialog, messagebox
+from tkinter import scrolledtext, filedialog, messagebox, font
 from tkdial import ImageKnob
-import threading, time
-import pyaudio, torch
+# Audio processing
+import threading, time, wave
+import pyaudio, torch, torchaudio
 import numpy as np
-import wave
-
-from model_interface import ModelInterface
-from generate_audio import TangoFluxModel, AudioldmModel
-
+# Real-time Plot
 import matplotlib.figure
 from matplotlib import animation
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-
+################# Project Code
+# GenAi Modules
+from model_interface import ModelInterface
+from generate_audio import TangoFluxModel, AudioldmModel
+# DSP Effects
 from reverb import init_reverb, apply_reverb
+from delay import init_delay, apply_delay
+from distortion import apply_distortion
 
-import pysndfx
-from pedalboard import Pedalboard, Reverb, Distortion, Delay
 
+#################################################################
+### TKinter App
+#################################################################
 class App:
     SAMPLE_RATE = 44100
-    STREAM_DURATION = 0.01         #Note that longer this is, the more delay for UI    
+    STREAM_DURATION = 0.1       #Note that longer this is, the more delay for UI    
     BLOCK_SIZE = int(SAMPLE_RATE * STREAM_DURATION) 
     
     def __init__(self, root, model: ModelInterface, p: pyaudio.PyAudio):
@@ -36,24 +42,39 @@ class App:
         self.model = model
         self.p = p
         
+        self.audio_tensor = np.zeros((2,self.BLOCK_SIZE))
+        self.audio_npy = np.zeros((2,self.BLOCK_SIZE))
+        self.processed_np = np.zeros((2,self.BLOCK_SIZE))
+        
+        self.playback_pos = 0
+        
         self.audio_generated = False
         self.audio_playing = False
+        
+        self.dial_updated = False
         
         # Initialize GUI components
         self.setup_ui()
         self.create_parameter_controls()
+    
+    ###########
+    ### GUI Setup
+    ##########
+    def set_dial_flag(self):
+        if self.dial_updated == False:
+            self.dial_updated = True
         
     def setup_ui(self):
         """Set up the main GUI components"""
         self.root.title("AI Audio Generator")
-        self.root.geometry("500x600")
+        self.root.geometry("500x620")
         
         self.title_label = Tk.Label(
             self.root,
-            text="GenSampler",
-            font="-weight bold"
+            text="Generative Sampler",
+            font=("Segoe UI", 18, "bold")
             )
-        self.title_label.pack(side=Tk.TOP, pady=20)
+        self.title_label.pack(side=Tk.TOP, pady=(20,10))
         
         self.knob_frame = Tk.Frame(root)
         
@@ -62,7 +83,6 @@ class App:
             self.knob_frame, 
             image="assets/knob.png", 
             text="Reverb: ",
-            #scale_image="assets/fun_scale_transparent.png",
             progress=False,
             progress_color="cyan",
             scroll_steps=0.05,
@@ -70,7 +90,8 @@ class App:
             start=1.0,
             end=0.0,
             start_angle=135,          # Pixel size of the knob
-            end_angle=270)
+            end_angle=270,
+            command=self.set_dial_flag)
         self.reverb_dial.pack(side=Tk.LEFT, padx=20)
         self.reverb_dial.set(0)
         
@@ -79,15 +100,15 @@ class App:
             self.knob_frame, 
             image="assets/knob.png", 
             text="Delay: ",
-            #scale_image="assets/fun_scale_transparent.png",
             progress=False,
             progress_color="cyan",
             radius=125,
             scroll_steps=0.05,
             start=1.0,
             end=0.0,
-            start_angle=135,          # Pixel size of the knob
-            end_angle=270)
+            start_angle=135,          
+            end_angle=270,
+            command=self.set_dial_flag)
         self.delay_dial.pack(side=Tk.LEFT, padx=20)
         self.delay_dial.set(0)
         
@@ -96,15 +117,15 @@ class App:
             self.knob_frame, 
             image="assets/knob.png", 
             text="Distortion: ",
-            #scale_image="assets/fun_scale_transparent.png",
             progress=False,
             progress_color="cyan",
             radius=125,
             scroll_steps=1,
             start=30,
             end=0,
-            start_angle=135,          # Pixel size of the knob
-            end_angle=270)
+            start_angle=135,
+            end_angle=270,
+            command=self.set_dial_flag)
         self.distortion_dial.pack(side=Tk.LEFT, padx=20)
         self.distortion_dial.set(0)
         self.knob_frame.pack(side=Tk.TOP)
@@ -116,6 +137,25 @@ class App:
         self.realtime_canvas.config(width=400, height=200)    # in pixels, set canvas size to something more manageable
         self.realtime_canvas.pack(side=Tk.TOP)              # place canvas widget
         
+        self.realtime_fig.patch.set_facecolor((240 / 255.0, 240/ 255.0, 237/ 255.0)) # match Tkinter bg color :)
+        my_ax = self.realtime_fig.add_subplot(1, 1, 1)
+        self.g1 = my_ax.plot([], [])[0]
+        my_ax.set_ylim(-1.0, 1.0) # Axis limits are the min/max 32 FLOAT PCM!!!
+        my_ax.set_xlim(0, self.BLOCK_SIZE)  # xlim is the number of frames per processing block
+        my_ax.set_xlabel('Time (index)')
+        #my_ax.set_title('Signal')
+        
+        # Define animation using figure, update and init functions, at the specified update interval
+        self.my_anima = animation.FuncAnimation(
+            self.realtime_fig,
+            self.graph_update,
+            init_func = self.graph_init,
+            interval = 20,   # milliseconds
+            blit = True,
+            cache_frame_data = False,
+            repeat = False
+        )
+        
         # Status Bar
         self.status_label = Tk.Label(
             fig_frame, 
@@ -125,8 +165,16 @@ class App:
             anchor=Tk.W
         )
         self.status_label.pack(fill=Tk.X, padx=5, pady=5)
-        
         fig_frame.pack(side=Tk.TOP, padx=10, pady=10)
+        
+        playback_frame = Tk.Frame(self.root)
+        playback_frame.pack(padx=10, pady=5)
+        self.play_button = Tk.Button(
+            playback_frame,
+            text="Play",
+            command=self.on_play
+        )
+        self.play_button.pack(side=Tk.LEFT)
         
         # Prompt Entry
         entry_frame = Tk.Frame(self.root)
@@ -136,7 +184,7 @@ class App:
         self.entry_box = Tk.Entry(
             entry_frame, 
             textvariable=self.prompt_var, 
-            font=("Helvetica", 12)
+            font=("Helvetica", 10)
         )
         self.entry_box.pack(side=Tk.LEFT, fill=Tk.X, expand=True, padx=(0, 5))
         
@@ -186,14 +234,24 @@ class App:
             textvariable=self.duration_var,
             width=5
         ).grid(row=0, column=3, sticky="w", padx=5)
-        
-    # def update_chat(self, message, sender="AI"):
-    #     """Update the chat display with a new message"""
-    #     self.chat_display.config(state="normal")
-    #     self.chat_display.insert(Tk.END, f"{sender}: {message}\n")
-    #     self.chat_display.config(state="disabled")
-    #     self.chat_display.yview(Tk.END)
-        
+    
+    # Setup x axis for the appropriate block size
+    def graph_init(self):
+        self.g1.set_xdata(range(self.BLOCK_SIZE))
+        return (self.g1,)
+    
+    # Update function: sets the y axis data to the current output block from the main loop
+    def graph_update(self, i):
+        audio_np = np.mean(self.processed_np, axis=0)
+        start = self.playback_pos * self.BLOCK_SIZE
+        audio_block = audio_np[start : start + self.BLOCK_SIZE]
+        if audio_block.shape[0] == self.BLOCK_SIZE:
+            self.g1.set_ydata(audio_block)
+        return (self.g1,)
+
+    ###########
+    ### Sample Generation
+    ##########
     def on_generate(self):
         """Handle the generate button click"""
         prompt = self.prompt_var.get().strip()
@@ -205,18 +263,12 @@ class App:
         #self.update_chat(prompt, "You")
         self.status_label.config(text="Generating audio...")
         self.send_button.config(state=Tk.DISABLED)
-        
-        # audio = self.model.infer(
-        #             prompt,
-        #             duration=self.duration_var.get(),
-        #             steps=self.steps_var.get()
-        #         )
-        
-        # self.on_generation_success(audio, prompt)
+        self.audio_generated = False
+
         duration = self.duration_var.get()
         steps = self.steps_var.get()
-        
         def _generate(prompt, duration, steps):
+            ''' Gen AI Entrypoint '''
             try:
                 # Generate audio
                 audio = self.model.infer(
@@ -245,11 +297,28 @@ class App:
         self.save_btn.config(state=Tk.NORMAL)
         #self.current_audio = audio  # Store for saving
         self.send_button.config(state=Tk.NORMAL)
-        
+        self.audio_effect_chain()
         self.audio_generated = True
-        self.num_samples = self.audio_npy.shape[0]
-        self.audio_playing = True
+        self.num_samples = self.audio_npy.shape[1] // self.BLOCK_SIZE
+        self.on_play()
         
+    def audio_effect_chain(self):
+        board = Pedalboard([
+            Reverb(room_size=0.5, damping=0.4, wet_level=self.reverb_dial.get(), dry_level=(1.0 - self.reverb_dial.get())),
+            Distortion(drive_db=self.distortion_dial.get()),
+            Delay(delay_seconds=0.2, feedback=self.delay_dial.get(), mix=0.3),
+        ])
+        self.processed_np = board(self.audio_npy, self.SAMPLE_RATE)                
+
+    def on_play(self):
+        if self.audio_playing == False:
+            self.audio_playing = True
+            self.play_button.config(text="Stop")
+            self.status_label.config(text="Playing audio...")
+        else:
+            self.audio_playing = False
+            self.play_button.config(text="Play")
+            self.status_label.config(text="Audio stopped...")        
         
     def on_generation_error(self, error):
         """Handle generation errors"""
@@ -257,10 +326,13 @@ class App:
         self.status_label.config(text=f"Error: {error}")
         self.send_button.config(state=Tk.NORMAL)
         messagebox.showerror("Generation Error", error)
-        
+    
+    ###########
+    ### Sample saving
+    ##########
     def save_audio(self):
         """Save the generated audio to file"""
-        if not hasattr(self, 'current_audio'):
+        if not self.audio_generated:
             return
             
         filepath = filedialog.asksaveasfilename(
@@ -271,116 +343,71 @@ class App:
         
         if filepath:
             try:
-                self.generator.save_wav(self.current_audio, filepath)
+                processed_tensor = torch.from_numpy(self.processed_np.T)
+                torchaudio.save(filepath, self.audio_tensor, sample_rate=self.SAMPLE_RATE, )
                 self.status_label.config(text=f"Saved to {filepath}")
-                self.update_chat(f"Audio saved to {filepath}")
+                #self.update_chat(f"Audio saved to {filepath}")
             except Exception as e:
                 messagebox.showerror("Save Error", f"Failed to save: {str(e)}")
-    
-    # def playback(self):
-    #     """Play the most recent generated audio with the desired FX """
-        
-    #     output_block = [int(x * 32767) for x in output_block] # convert output block from float
-    #     pass
-    
-    # def play_current_audio(self):
-        
-    #     pass
-
-    def play_audio_async(self, sample_rate: int = 44100, on_complete: callable = None):
-        """
-        Plays a PyTorch audio tensor in the background using PyAudio and calls `on_complete` when done.
-
-        Args:
-            audio_tensor (torch.Tensor): Audio tensor of shape (channels, samples), dtype float32.
-            sample_rate (int): Sampling rate of the audio.
-            on_complete (callable, optional): Function to call after playback is finished.
-        """
-        audio_tensor = self.audio_tensor
-        assert audio_tensor.ndim == 2, "Expected audio tensor with shape (channels, samples)"
-        assert audio_tensor.dtype == torch.float32, "Expected float32 audio tensor"
-
-        def _play():
-            try:
-                # Convert tensor to numpy int16 PCM format
-                # audio_np = audio_tensor.clamp(-1.0, 1.0).numpy()
-                # audio_np = (audio_np.T * 32767).astype(np.int16)  # Shape: (samples, channels)
-                
-                audio_np = audio_tensor.numpy()
-                # Step 3: Create and apply the Pedalboard effects
-                board = Pedalboard([
-                    Reverb(room_size=1.0, damping=0.7, wet_level=self.reverb_dial.get(), dry_level=(1.0 - self.reverb_dial.get())),
-                    Distortion(drive_db=self.distortion_dial.get()),
-                    Delay(delay_seconds=0.3, feedback=self.delay_dial.get(), mix=0.8),
-                ])
-
-                processed_np = board(audio_np, sample_rate)                
-                audio_bytes = processed_np.tobytes()
-
-                # Set up PyAudio stream
-                p = pyaudio.PyAudio()
-                stream = p.open(
-                    format=pyaudio.paFloat32,
-                    channels=audio_tensor.shape[0],
-                    rate=sample_rate,
-                    output=True
-                )
-
-                stream.write(audio_bytes)
-                stream.stop_stream()
-                stream.close()
-                p.terminate()
-
-            finally:
-                if callable(on_complete):
-                    on_complete()
-
-        thread = threading.Thread(target=_play, daemon=True)
-        thread.start()
+                pass
+from pedalboard import Pedalboard, Reverb, Distortion, Delay
 
 
+
+
+#################################################################
+### MAIN
+#################################################################
 import warnings
 if __name__ == "__main__":
     # Ignore many warning msgs from PyTorch & others
     warnings.filterwarnings('ignore')
     
+    ### Create Tkinter root
     root = Tk.Tk()
-    model = TangoFluxModel()
+    ### Create Audio I/O
     p = pyaudio.PyAudio()
-    model.load() # Load default model
-    app = App(root, model, p)
+    ### Create TangoFlux instance
+    model = TangoFluxModel()
+    model.load() # Load model (default weights)
     
+    ### Initialize gui with App class
+    app = App(root, model, p)
+    ### Initialize audio stream
     stream = app.p.open(
         format=pyaudio.paFloat32,
         channels=2,
         rate=44100,
+        input=False,
         output=True,
         frames_per_buffer=app.BLOCK_SIZE
     )
     
-    while True:
+    ###########
+    ### UI and Playback loop
+    ##########
+    CONTINUE = True
+    last_frame_time = int(round(time.time() * 1000))
+    while CONTINUE:
         root.update()
+        current_time = int(round(time.time() * 1000)) 
         
         if app.audio_generated and app.audio_playing:
-            print(time.strftime("%M:%S"))
             
-            audio_np = app.audio_npy
-            audio_block = audio_np[app.playback_pos : app.playback_pos + app.BLOCK_SIZE]
+            if app.dial_updated:
+                app.audio_effect_chain()
+                app.dial_updated = False
             
-            # Step 3: Create and apply the Pedalboard effects
-            board = Pedalboard([
-                Reverb(room_size=1.0, damping=0.7, wet_level=app.reverb_dial.get(), dry_level=(1.0 - app.reverb_dial.get())),
-                Distortion(drive_db=app.distortion_dial.get()),
-                Delay(delay_seconds=0.3, feedback=app.delay_dial.get(), mix=0.8),
-            ])
-            processed_np = board(audio_block, app.SAMPLE_RATE)                
-            audio_bytes = processed_np.tobytes()
-            
-            stream.write(audio_bytes)
-            app.playback_pos = (app.playback_pos + 1) % (app.num_samples)
-            print(time.strftime("%M:%S"))
-        else:
-            stream.write(np.zeros((2,app.BLOCK_SIZE)).tobytes())
-
-        
-        
+            audio_np = app.processed_np
+            start = app.playback_pos * app.BLOCK_SIZE
+            audio_block = audio_np[:, start : start + app.BLOCK_SIZE]
+            stream.write(audio_block.tobytes())
+            app.playback_pos = (app.playback_pos + 1) if app.playback_pos < app.num_samples else 0
+            last_frame_time = int(round(time.time() * 1000))
+    
+    print("Cleaning up resources...")
+    stream.stop_stream()
+    stream.close()
+    p.close()
+    p.terminate()
+    print("######### Application closed ###########")
